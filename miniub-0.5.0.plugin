@@ -1,0 +1,207 @@
+"""miniUB loader — installing this file is enough.
+
+The real userbot source lives on GitHub.  This plugin downloads it, checks
+the pinned SHA-256, and injects its methods into the current BasePlugin
+instance.  There is no Telethon, session or API key here: the host app's
+account and client are used by the loaded userbot.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import threading
+import types
+
+from base_plugin import BasePlugin, HookResult
+from ui.settings import Header, Text
+
+
+__id__ = "miniub"
+__name__ = "miniUB"
+__description__ = "Загрузчик miniUB: код юзербота на GitHub"
+__author__ = "thisisnotwhatyoumind"
+__version__ = "0.5.0"
+__icon__ = "exteraPlugins/1"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
+__category__ = ["tools", "chats"]
+
+
+USERBOT_URL = "https://raw.githubusercontent.com/thisisnotwhatyoumind/miniub/main/userbot.py"
+USERBOT_SHA256 = "ccee75e00b122de132bfb3068ee5b791c19181ed885b76de48c2c274e649811d"
+USERBOT_CLASS = "MiniUBPlugin"
+USERBOT_MAX_BYTES = 2 * 1024 * 1024
+USERBOT_TIMEOUT = 20
+_LOADER_LOCK = threading.RLock()
+
+
+def _sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class MiniUBPlugin(BasePlugin):
+    # ---------- loader internals ----------
+
+    def _loader_log_error(self, message):
+        logger = getattr(self, "logger", None)
+        if logger is not None:
+            try:
+                logger.exception(message)
+                return
+            except Exception:
+                pass
+        try:
+            print("miniUB loader: " + message)
+        except Exception:
+            pass
+
+    def _loader_download(self):
+        last_error = None
+        try:
+            import urllib.request
+
+            request = urllib.request.Request(
+                USERBOT_URL,
+                headers={"User-Agent": "miniUB-loader/" + __version__},
+            )
+            with urllib.request.urlopen(request, timeout=USERBOT_TIMEOUT) as response:
+                raw = response.read(USERBOT_MAX_BYTES + 1)
+        except Exception as exc:
+            last_error = exc
+            try:
+                import requests
+
+                response = requests.get(
+                    USERBOT_URL,
+                    timeout=USERBOT_TIMEOUT,
+                    headers={"User-Agent": "miniUB-loader/" + __version__},
+                )
+                response.raise_for_status()
+                raw = response.content[: USERBOT_MAX_BYTES + 1]
+            except Exception as exc2:
+                raise RuntimeError(
+                    "не скачалось: " + str(last_error) + " / " + str(exc2)
+                )
+        if len(raw) > USERBOT_MAX_BYTES:
+            raise RuntimeError("userbot.py больше 2 МБ")
+        return raw
+
+    def _loader_verify(self, raw):
+        actual = _sha256_hex(raw)
+        expected = str(USERBOT_SHA256).strip().lower()
+        if len(expected) == 64 and all(c in "0123456789abcdef" for c in expected):
+            ok = actual == expected
+        else:
+            expected_b64 = expected.rstrip("=").replace("-", "+").replace("_", "/")
+            try:
+                expected_bytes = base64.b64decode(
+                    expected_b64 + "=" * (-len(expected_b64) % 4)
+                )
+                ok = hashlib.sha256(raw).digest() == expected_bytes
+            except Exception:
+                ok = False
+        if not ok:
+            raise RuntimeError(
+                "SHA256 не совпал: ожидалось "
+                + str(USERBOT_SHA256)
+                + ", получено "
+                + actual
+            )
+
+    def _loader_inject(self, source):
+        namespace = {
+            "__name__": "miniub_userbot",
+            "__file__": globals().get("__file__", USERBOT_URL),
+            "__package__": None,
+        }
+        exec(compile(source, "<miniub_userbot>", "exec"), namespace, namespace)
+        remote = namespace.get(USERBOT_CLASS)
+        if not isinstance(remote, type):
+            raise RuntimeError("в userbot.py нет класса " + USERBOT_CLASS)
+        for required in (
+            "create_settings",
+            "on_plugin_load",
+            "on_plugin_unload",
+            "on_send_message_hook",
+            "on_update_hook",
+        ):
+            if not callable(getattr(remote, required, None)):
+                raise RuntimeError("в userbot.py нет метода " + required)
+
+        for name, attr in vars(remote).items():
+            if name.startswith("__"):
+                continue
+            if isinstance(attr, staticmethod):
+                setattr(self, name, attr.__get__(self, type(self)))
+            elif isinstance(attr, classmethod):
+                setattr(self, name, attr.__get__(type(self), type(self)))
+            elif isinstance(attr, property):
+                try:
+                    setattr(self, name, attr.__get__(self, type(self)))
+                except Exception:
+                    pass
+            elif isinstance(attr, types.FunctionType):
+                setattr(self, name, types.MethodType(attr, self))
+            else:
+                setattr(self, name, attr)
+
+        self._loader_loaded = True
+        self._loader_error = ""
+
+    def _loader_ensure(self):
+        if getattr(self, "_loader_loaded", False):
+            return True, ""
+        with _LOADER_LOCK:
+            if getattr(self, "_loader_loaded", False):
+                return True, ""
+            try:
+                raw = self._loader_download()
+                self._loader_verify(raw)
+                source = raw.decode("utf-8-sig")
+                self._loader_inject(source)
+                return True, ""
+            except Exception as exc:
+                self._loader_error = str(exc)
+                self._loader_log_error("miniUB loader: " + self._loader_error)
+                return False, self._loader_error
+
+    # ---------- host lifecycle ----------
+    # After a successful injection these instance methods are replaced by
+    # the corresponding methods from userbot.py.
+
+    def create_settings(self):
+        ok, error = self._loader_ensure()
+        if not ok:
+            return [
+                Header(text="miniUB loader"),
+                Text(
+                    text="Не удалось загрузить юзербот",
+                    subtext=error,
+                    icon="msg_info",
+                ),
+            ]
+        return self.create_settings()
+
+    def on_plugin_load(self):
+        ok, error = self._loader_ensure()
+        if not ok:
+            return None
+        return self.on_plugin_load()
+
+    def on_plugin_unload(self):
+        if not getattr(self, "_loader_loaded", False):
+            return None
+        return self.on_plugin_unload()
+
+    def on_send_message_hook(self, account, params):
+        ok, _ = self._loader_ensure()
+        if not ok:
+            return HookResult()
+        return self.on_send_message_hook(account, params)
+
+    def on_update_hook(self, update_name, account, update):
+        ok, _ = self._loader_ensure()
+        if not ok:
+            return HookResult()
+        return self.on_update_hook(update_name, account, update)

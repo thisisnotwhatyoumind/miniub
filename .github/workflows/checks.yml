@@ -1,0 +1,27 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile loader, userbot and modules
+        run: python -m py_compile miniub-0.5.0.plugin userbot.py modules/*.py
+
+      - name: Compile embedded module sources
+        run: python tools/check_embedded.py userbot.py
+
+      - name: Verify loader SHA256 pin
+        run: python tools/check_loader.py miniub-0.5.0.plugin userbot.py
+
+      - name: Test loader injection
+        run: python -m unittest discover -s tests -v

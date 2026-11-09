@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# miniUB runtime data
+miniub_system/
+miniub_data/
+*.log
+*.tmp
+
+# Build / archives
+dist/
+build/
+*.zip
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# The installable .plugin file is the source, so it is tracked on purpose.

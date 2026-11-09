@@ -1,0 +1,37 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check syntax and pin
+        run: |
+          python -m py_compile miniub-0.5.0.plugin userbot.py modules/*.py
+          python tools/check_embedded.py userbot.py
+          python tools/check_loader.py miniub-0.5.0.plugin userbot.py
+
+      - name: Test loader injection
+        run: python -m unittest discover -s tests -v
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            miniub-0.5.0.plugin userbot.py \
+            --title "miniUB $GITHUB_REF_NAME" \
+            --generate-notes
